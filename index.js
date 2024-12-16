@@ -2,12 +2,43 @@ require("dotenv").config();
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const express = require("express");
 const cors = require("cors");
+const jwt = require("jsonwebtoken");
+const cookieParser = require("cookie-parser");
 
 const app = express();
 const port = process.env.PORT || 5000;
 
-app.use(cors());
+app.use(
+  cors({
+    origin: ["http://localhost:5173"],
+    credentials: true,
+  })
+);
 app.use(express.json());
+app.use(cookieParser());
+
+const logger = (req, res, next) => {
+  console.log("inside the logger");
+  next();
+};
+
+const verifyToken = (req, res, next) => {
+  console.log("inside verify token middleware", req.cookies);
+  const token = req?.cookies?.token;
+
+  if (!token) {
+    return res.status(401).send({ message: "Unauthorized access" });
+  }
+
+  jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
+    if (err) {
+      return res.status(401).send({ message: "Unauthorized access" });
+    }
+
+    req.user = decoded;
+    next();
+  });
+};
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.ybs8l.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
@@ -32,18 +63,31 @@ async function run() {
 
     const jobCollection = client.db("jobPortalDB").collection("jobs");
     const jobApplicationCollection = client
-    .db("jobPortalDB")
-    .collection("job_applications");
-    
+      .db("jobPortalDB")
+      .collection("job_applications");
+
+    // Auth related APIs
+    app.post("/jwt", async (req, res) => {
+      const user = req.body;
+      const token = jwt.sign(user, process.env.JWT_SECRET, { expiresIn: "1h" });
+      res
+        .cookie("token", token, {
+          httpOnly: true,
+          secure: false,
+        })
+        .send({ success: true });
+    });
+
     // Jobs related APIs
 
-    app.get("/jobs", async (req, res) => {
+    app.get("/jobs", logger, async (req, res) => {
+      console.log("now inside the api callback");
       const email = req.query.email;
       let query = {};
 
-      if(email){
-        query = {hr_email: email}
-      };
+      if (email) {
+        query = { hr_email: email };
+      }
 
       const cursor = jobCollection.find(query);
       const result = await cursor.toArray();
@@ -57,7 +101,7 @@ async function run() {
       res.send(result);
     });
 
-    app.post("/jobs", async(req, res) => {
+    app.post("/jobs", async (req, res) => {
       const newJob = req.body;
       const insertResult = await jobCollection.insertOne(newJob);
       res.send(insertResult);
@@ -65,15 +109,20 @@ async function run() {
 
     // Job Application related APIs
 
-    app.get("/job-application", async (req, res) => {
+    app.get("/job-application", verifyToken, async (req, res) => {
       const email = req.query.email;
       const query = { applicant_email: email };
+
+      if (req.user.email !== req.query.email) {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+
       const result = await jobApplicationCollection.find(query).toArray();
 
-      for(const application of result){
-        const secondQuery = {_id: new ObjectId(application.job_id)};
+      for (const application of result) {
+        const secondQuery = { _id: new ObjectId(application.job_id) };
         const jobResult = await jobCollection.findOne(secondQuery);
-        if(jobResult){
+        if (jobResult) {
           application.title = jobResult.title;
           application.location = jobResult.location;
           application.jobType = jobResult.jobType;
@@ -82,21 +131,21 @@ async function run() {
           application.company = jobResult.company;
           application.company_logo = jobResult.company_logo;
         }
-      };
+      }
 
       res.send(result);
     });
 
-    app.get("/job-application/:id", async(req, res) => {
+    app.get("/job-application/:id", async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       const singleResult = await jobApplicationCollection.findOne(query);
       res.send(singleResult);
     });
 
-    app.get("/job-applications/jobs/:job_id", async(req, res) => {
+    app.get("/job-applications/jobs/:job_id", async (req, res) => {
       const jobId = req.params.job_id;
-      const query = {job_id: jobId};
+      const query = { job_id: jobId };
       const result = await jobApplicationCollection.find(query).toArray();
       res.send(result);
     });
@@ -110,18 +159,17 @@ async function run() {
       const job = await jobCollection.findOne(query);
       let newCount = 0;
 
-      if(job.applicationCount){
+      if (job.applicationCount) {
         newCount = job.applicationCount + 1;
-      }
-      else{
+      } else {
         newCount = 1;
       }
 
-      const filter = {_id: new ObjectId(id)};
+      const filter = { _id: new ObjectId(id) };
       const updatedDoc = {
         $set: {
-          applicationCount: newCount
-        }
+          applicationCount: newCount,
+        },
       };
 
       const updateResult = await jobCollection.updateOne(filter, updatedDoc);
@@ -129,22 +177,25 @@ async function run() {
       res.send(result);
     });
 
-    app.patch("/job-applications/:id", async(req, res) => {
+    app.patch("/job-applications/:id", async (req, res) => {
       const id = req.params.id;
       const data = req.body;
-      const filter = {_id: new ObjectId(id)};
+      const filter = { _id: new ObjectId(id) };
       const updatedDoc = {
         $set: {
-          status: data.status
-        }
+          status: data.status,
+        },
       };
 
-      const updateResult = await jobApplicationCollection.updateOne(filter, updatedDoc);
+      const updateResult = await jobApplicationCollection.updateOne(
+        filter,
+        updatedDoc
+      );
 
       res.send(updateResult);
     });
 
-    app.delete("/job-application/:id", async(req, res) => {
+    app.delete("/job-application/:id", async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       // console.log(query);
@@ -152,7 +203,6 @@ async function run() {
       // console.log(deleteResult);
       res.send(deleteResult);
     });
-
   } finally {
     // Ensures that the client will close when you finish/error
     // await client.close();
