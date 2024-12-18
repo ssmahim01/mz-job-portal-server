@@ -100,7 +100,24 @@ async function run() {
       res.send(result);
     });
 
-    app.get("/jobs/:id", async (req, res) => {
+    app.get("/jobs-collection", async(req, res) => {
+      const page = parseInt(req.query.page);
+      const size = parseInt(req.query.size);
+      // console.log(page, size);
+
+      const jobsResult = await jobCollection.find()
+      .skip(page * size)
+      .limit(size)
+      .toArray()
+      res.send(jobsResult);
+    });
+
+    app.get("/jobs-count", async(req, res) => {
+      const count = await jobCollection.estimatedDocumentCount();
+      res.send({count});
+    });
+
+    app.get("/jobs-collection/:id", async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       const result = await jobCollection.findOne(query);
